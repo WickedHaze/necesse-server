@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
 # Necesse dedicated server - setup.sh
-# Runs as root on a Debian/Ubuntu VPS. Installs SteamCMD + the dedicated
-# server app (Steam app id 1169370) under /opt/necesse-server and creates
-# the config + systemd unit.
+# Runs as root on a Debian/Ubuntu VPS. Downloads the official Linux64 server
+# zip directly from necessegame.com/server (no SteamCMD), extracts it to
+# /opt/necesse-server, writes cfg/server.cfg, creates a service account, and
+# registers a systemd unit + daily world-backup timer.
 #
 # Usage:  sudo bash setup.sh
+#   Env:   PORT  SLOTS  WORLD  PASSWORD  MOTD   (optional overrides)
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
-STEAMAPPID="1169370"                 # Necesse dedicated server
-INSTALL_DIR="/opt/necesse-server"    # force_install_dir target
-RUN_USER="${RUN_USER:-necesse}"      # dedicated service account
-# Directory this script lives in (holds backup.sh alongside setup.sh).
+INSTALL_DIR="/opt/necesse-server"
+RUN_USER="${RUN_USER:-necesse}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKUP_SH="${SCRIPT_DIR}/backup.sh"
 BACKUP_DIR="/root/necesse-backups"
@@ -23,97 +23,48 @@ CFG_FILE="${INSTALL_DIR}/cfg/server.cfg"
 PORT="${PORT:-14159}"
 SLOTS="${SLOTS:-10}"
 WORLD="${WORLD:-world}"
-PASSWORD="${PASSWORD:-}"            # blank = no password
-MOTD="${MOTD:-Necesse via SteamCMD (2GB VPS)}"
+PASSWORD="${PASSWORD:-}"                 # blank = no password
+MOTD="${MOTD:-WickedHaze Necesse server}"
 
 log() { echo -e "\033[1;32m[setup]\033[0m $*"; }
 die() { echo -e "\033[1;31m[error]\033[0m $*"; exit 1; }
 
-# --- root check -----------------------------------------------------------
 [[ $EUID -eq 0 ]] || die "Run as root:  sudo bash setup.sh"
+command -v unzip >/dev/null 2>&1 || { apt-get update -y; apt-get install -y unzip curl; }
+command -v wget >/dev/null 2>&1 || apt-get install -y wget curl tar unzip
 
-# --- distro detection -----------------------------------------------------
-if command -v apt-get >/dev/null 2>&1; then
-    PKG="apt-get"
-elif command -v dnf >/dev/null 2>&1; then
-    PKG="dnf"
-elif command -v yum >/dev/null 2>&1; then
-    PKG="yum"
-else
-    die "Unsupported package manager (need apt/dnf/yum)."
-fi
-
-# --- 32-bit libs needed by steamcmd --------------------------------------
-log "Installing system dependencies (package manager: ${PKG})..."
-if [[ "$PKG" == "apt-get" ]]; then
-    dpkg --add-architecture i386
-    apt-get update -y
-    DEBIAN_FRONTEND=noninteractive apt-get install -y \
-        lib32gcc-s1 lib32stdc++6 libcurl4-gnutls-dev:i386 \
-        wget curl tar \
-        || apt-get install -y lib32gcc1 libstdc++6 libcurl4-openssl-dev:i386 wget curl tar
-elif [[ "$PKG" == "dnf" ]]; then
-    dnf install -y glibc.i686 libstdc++.i686 libcurl.i686 wget curl tar
-else
-    yum install -y glibc.i686 libstdc++.i686 libcurl.i686 wget curl tar
-fi
-
-# --- Java (Necesse server is Java-based) ----------------------------------
-log "Ensuring a JRE is present..."
-if command -v java >/dev/null 2>&1; then
-    log "Java already installed: $(java -version 2>&1 | head -1)"
-else
-    if [[ "$PKG" == "apt-get" ]]; then
-        apt-get install -y openjdk-17-jre-headless
-    elif [[ "$PKG" == "dnf" ]]; then
-        dnf install -y java-17-openjdk-headless
-    else
-        yum install -y java-17-openjdk-headless
-    fi
-fi
-
-# --- steamcmd -------------------------------------------------------------
-log "Installing SteamCMD to /usr/games/steamcmd ..."
-if [[ ! -f "/usr/games/steamcmd" ]]; then
-    if [[ "$PKG" == "apt-get" ]]; then
-        echo steam steam/question select "I AGREE" | debconf-set-selections
-        echo steam steam/license note '' | debconf-set-selections
-        DEBIAN_FRONTEND=noninteractive apt-get install -y steamcmd || {
-            log "steamcmd package not available; installing manually."
-            mkdir -p /opt/steamcmd
-            cd /opt/steamcmd
-            wget -q https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz
-            tar xzf steamcmd_linux.tar.gz
-            ln -sf /opt/steamcmd/steamcmd.sh /usr/local/bin/steamcmd
-        }
-    else
-        mkdir -p /opt/steamcmd
-        cd /opt/steamcmd
-        wget -q https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz
-        tar xzf steamcmd_linux.tar.gz
-        ln -sf /opt/steamcmd/steamcmd.sh /usr/local/bin/steamcmd
-    fi
-fi
-
-# --- dedicated user -------------------------------------------------------
+# --- dedicated service account -------------------------------------------
 if ! id "$RUN_USER" >/dev/null 2>&1; then
     log "Creating user ${RUN_USER} ..."
-    useradd --system --shell /usr/sbin/nologin --home /nonexistent "$RUN_USER"
+    useradd --system --shell /usr/sbin/nologin --home /var/lib/necesse "$RUN_USER"
+    mkdir -p /var/lib/necesse && chown "$RUN_USER":"$RUN_USER" /var/lib/necesse
 fi
 
-# --- install the server app ----------------------------------------------
-ST=$(command -v steamcmd || command -v /usr/games/steamcmd || echo /usr/local/bin/steamcmd)
-log "Installing Necesse dedicated server (app ${STEAMAPPID}) to ${INSTALL_DIR} ..."
-mkdir -p "${INSTALL_DIR}"
-chown -R "$RUN_USER":"$RUN_USER" "${INSTALL_DIR}"
-STEAMCMD_CMD=""
-[[ -f /usr/games/steamcmd ]] && STEAMCMD_CMD="/usr/games/steamcmd"
-[[ -z "$STEAMCMD_CMD" && -f /usr/local/bin/steamcmd ]] && STEAMCMD_CMD="/usr/local/bin/steamcmd"
-sudo -u "$RUN_USER" "$STEAMCMD_CMD" \
-    +force_install_dir "$INSTALL_DIR" \
-    +login anonymous \
-    +app_update "$STEAMAPPID" validate \
-    +quit
+# --- download + extract the server ---------------------------------------
+log "Fetching latest Linux64 server build from necessegame.com/server ..."
+# Grab the newest (v1.3.x) linux64 signed URL from the page: first href containing
+# "necesse-server-linux64-" and unescape HTML entities.
+URL="$(curl -s -A 'Mozilla/5.0' https://necessegame.com/server \
+  | grep -oE 'href="[^"]*necesse-server-linux64-[0-9][^"]*"' | head -1 \
+  | sed 's/^href="//; s/"$//' | sed 's/&amp;/\&/g')"
+[[ -n "$URL" ]] || die "Could not find Linux64 download URL on necessegame.com/server"
+
+rm -rf /tmp/necesse-dl && mkdir -p /tmp/necesse-dl
+curl -s -A 'Mozilla/5.0' -o /tmp/necesse-dl/server.zip "$URL"
+[[ -s /tmp/necesse-dl/server.zip ]] || die "Download produced an empty file"
+
+rm -rf "$INSTALL_DIR"
+mkdir -p "$(dirname "$INSTALL_DIR")"
+log "Extracting to ${INSTALL_DIR} ..."
+unzip -q /tmp/necesse-dl/server.zip -d /tmp/necesse-dl
+SRC="$(find /tmp/necesse-dl -maxdepth 2 -type d -name 'necesse-server-*' | head -1)"
+[[ -n "$SRC" ]] || die "Could not locate extracted server directory"
+mv "$SRC" "$INSTALL_DIR"
+rm -rf /tmp/necesse-dl
+
+# server binary must be executable; ship bundled JRE at jre/ (no system Java needed)
+chmod +x "${INSTALL_DIR}"/StartServer*.sh "${INSTALL_DIR}"/jre/bin/java
+chown -R "$RUN_USER":"$RUN_USER" "$INSTALL_DIR"
 
 # --- config ---------------------------------------------------------------
 log "Writing ${CFG_FILE} ..."
@@ -152,23 +103,17 @@ Restart=on-failure
 RestartSec=5
 KillSignal=SIGINT
 TimeoutStopSec=60
-
-# Optional hardening
-NoNewPrivileges=true
-ProtectSystem=full
-ReadWritePaths=${INSTALL_DIR}
-PrivateTmp=true
+LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target
 UNIT
 
-## --- backup unit + timer (daily world backups, keep 7) ---
+# --- backup unit + timer (daily world backups, keep 7) --------------------
 log "Installing backup service + timer..."
 BACKUP_BIN="/opt/necesse-backup.sh"
-install -m 0755 "${BACKUP_SH}" "${BACKUP_BIN}" || {
-    log "WARN: could not copy backup.sh. Copy ${BACKUP_SH} to ${BACKUP_BIN} manually."
-}
+install -m 0755 "${BACKUP_SH}" "${BACKUP_BIN}" || \
+    log "WARN: could not copy backup.sh. Copy manually to ${BACKUP_BIN}."
 cat > /etc/systemd/system/necesse-backup.service <<UNIT
 [Unit]
 Description=Necesse world backup
@@ -178,7 +123,6 @@ Type=oneshot
 ExecStart=/bin/bash ${BACKUP_BIN}
 User=root
 UNIT
-
 cat > /etc/systemd/system/necesse-backup.timer <<UNIT
 [Unit]
 Description=Daily Necesse world backup
@@ -203,7 +147,6 @@ cat <<INFO
 
 --------------------------------------------------------------------------
 Necesse server installed and started.
-  App ID      : ${STEAMAPPID}
   Install dir : ${INSTALL_DIR}
   World name  : ${WORLD}
   Port        : ${PORT}/udp   (open this in your firewall)
@@ -216,8 +159,9 @@ Open the UDP port (default 14159):
 Control:
   sudo systemctl stop/start/restart necesse
   sudo systemctl status necesse
-  tail -f ${INSTALL_DIR}/logs/  (latest log)
+  tail -f ${INSTALL_DIR}/logs/   (latest log)
 
-Joining: in Necesse use "Join Game" -> server <PUBLIC_IP>:${PORT}
+Joining: in Necesse "Join Game" -> <PUBLIC_IP>:${PORT}
+Backups: daily 03:00 UTC -> ${BACKUP_DIR}  (keep newest 7)
 --------------------------------------------------------------------------
 INFO
