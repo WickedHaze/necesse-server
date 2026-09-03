@@ -14,19 +14,25 @@ and restarts on crash.
 
 | File | Purpose |
 |------|---------|
-| `setup.sh` | One-shot root installer. Installs SteamCMD + Java + the server app, writes `cfg/server.cfg`, creates a `necesse` user, and registers a systemd service. |
+| `setup.sh` | One-shot root installer. Installs SteamCMD + Java + the server app, writes `cfg/server.cfg`, creates a `necesse` user, registers a systemd service, and sets up the daily backup timer. |
+| `backup.sh` | World backup script: tars `<install>/saves`, keeps the newest `KEEP` (7) archives. Wired into a systemd timer by `setup.sh`, runnable standalone. |
 | `README.md` | This file. |
 
 Default config: port `14159/udp`, 10 slots, world named `world`, no password.
 Override via env vars when running `setup.sh`, e.g.
 `WORLD=myserver SLOTS=6 PORT=25000 PASSWORD=secret sudo bash setup.sh`.
 
+`setup.sh` also installs a **daily world backup** (systemd timer, 03:00, keeps
+the last 7, script at `/opt/necesse-backup.sh`). Config via env vars on the
+backup run: `BACKUP_DIR` (default `/root/necesse-backups`), `KEEP` (default 7).
+
 ---
 
 ## The 5-step plan (your end)
 
-1. **Rent a VPS** — Hetzner CX11 (2GB / 1 vCPU / 20GB) ≈ $4.85/mo, or a
-   LowEndBox flash deal. Pick **Debian 12** (or Ubuntu 22.04/24.04).
+1. **Rent a VPS** — Kainode Singapore **VPS Pro** (2 vCPU / 4GB / 60GB,
+   $6.99/mo; try coupon `SGLEB30` for ~$4.89). Pick **Debian 12** (or Ubuntu
+   22.04/24.04).
 2. **Get the IP + root password/SSH key** from your provider's panel.
 3. **Copy these files to the server.** From your PC:
    ```
@@ -75,15 +81,16 @@ Notable options:
 
 ---
 
-## Tuning for 2GB RAM
+## Tuning for RAM
 
-The server is Java-based. systemd unit intentionally uses the default heap so
-it stays under your 2GB. If you run other services too and see memory pressure,
-add to the `[Service]` section:
+The server is Java-based. The systemd unit intentionally leaves the heap
+unset so the JVM picks a sensible default. On the VPS Pro (4GB), the default
+is fine for 10-20 players. Only cap it if you run other services on the same
+box and see memory pressure. Add to the `[Service]` section:
 ```
-Environment=JAVA_OPTS=-Xmx900M -Xms512M
+Environment=JAVA_OPTS=-Xmx1600M -Xms800M
 ```
-then restart. StartServer-nogui.sh honors `JAVA_OPTS` in most builds.
+then restart. `StartServer-nogui.sh` honors `JAVA_OPTS` in most builds.
 
 ---
 
@@ -93,12 +100,16 @@ then restart. StartServer-nogui.sh honors `JAVA_OPTS` in most builds.
   (`lib32gcc`, `lib32stdc++`, 32-bit curl).
 - The install dir is **`/opt/necesse-server`** via SteamCMD `+force_install_dir`.
   Your client PC never needs Steam running for this to work.
-- Save files live under the install dir; back them up (see below).
+- **Backups are automatic**: a systemd timer runs `/opt/necesse-backup.sh`
+  daily at 03:00, keeping the last 7 archives in `/root/necesse-backups`.
+  The archives cover `<install>/saves`. Change retention via `KEEP` in the
+  backup script. If you move install dirs, update `INSTALL_DIR` in both
+  `setup.sh` and `backup.sh`.
+- World loss hurts: confirm backups actually exist
+  (`ls /root/necesse-backups`) after the first day before trusting it.
 
-### Simple world backup (cron)
+### Manual backup (if you disabled the timer)
+Run the script directly:
 ```
-sudo crontab -e
-# add:
-0 3 * * * tar czf /root/necesse-backup-$(date +\%F).tar.gz /opt/necesse-server/saves
+sudo /opt/necesse-backup.sh
 ```
-Keep the last several: `ls -t /root/necesse-backup-*.tar.gz | tail -n +8 | xargs -r rm --`

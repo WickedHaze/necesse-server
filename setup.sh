@@ -12,6 +12,10 @@ set -euo pipefail
 STEAMAPPID="1169370"                 # Necesse dedicated server
 INSTALL_DIR="/opt/necesse-server"    # force_install_dir target
 RUN_USER="${RUN_USER:-necesse}"      # dedicated service account
+# Directory this script lives in (holds backup.sh alongside setup.sh).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BACKUP_SH="${SCRIPT_DIR}/backup.sh"
+BACKUP_DIR="/root/necesse-backups"
 
 SERVICE_FILE="/etc/systemd/system/necesse.service"
 CFG_FILE="${INSTALL_DIR}/cfg/server.cfg"
@@ -159,9 +163,38 @@ PrivateTmp=true
 WantedBy=multi-user.target
 UNIT
 
+## --- backup unit + timer (daily world backups, keep 7) ---
+log "Installing backup service + timer..."
+BACKUP_BIN="/opt/necesse-backup.sh"
+install -m 0755 "${BACKUP_SH}" "${BACKUP_BIN}" || {
+    log "WARN: could not copy backup.sh. Copy ${BACKUP_SH} to ${BACKUP_BIN} manually."
+}
+cat > /etc/systemd/system/necesse-backup.service <<UNIT
+[Unit]
+Description=Necesse world backup
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash ${BACKUP_BIN}
+User=root
+UNIT
+
+cat > /etc/systemd/system/necesse-backup.timer <<UNIT
+[Unit]
+Description=Daily Necesse world backup
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT
+
 systemctl daemon-reload
-systemctl enable necesse
+systemctl enable necesse necesse-backup.timer
 systemctl start necesse
+systemctl start necesse-backup.timer
 
 log "Done. Status:"
 systemctl status necesse --no-pager || true
