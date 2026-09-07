@@ -19,8 +19,10 @@ log(){ echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$MONITOR_LOG"; }
 log "=== spike monitor started (threshold ${SPIKE_THRESH}% CPU) ==="
 
 while true; do
-  IDLE=$(top -bn1 | awk '/Cpu\(s\)/{print $8}')
-  JAVA=$(top -bn1 | awk '/java/{print $9; exit}')
+  # Idle % = number preceding "id," in the Cpu(s) line (robust across field changes)
+  IDLE=$(top -bn1 | grep 'Cpu(s)' | grep -oE '[0-9.]+ id' | grep -oE '[0-9.]+' | head -1)
+  # Java process CPU% = the value in the %CPU column. Use ps for a stable parse.
+  JAVA=$(ps -eo pcpu,comm | awk '/java/ && !/awk/ && !/grep/ {print $1; exit}')
   IDLE_N=$(echo "$IDLE" | tr -d '%')
   JAVA_N=$(echo "$JAVA" | tr -d '%')
   BUSY=$(python3 -c "print(round(100-float('${IDLE_N:-100}'),1))" 2>/dev/null || echo 0)
