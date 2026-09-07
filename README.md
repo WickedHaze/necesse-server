@@ -22,6 +22,7 @@ systemd so it auto-starts on boot and restarts on crash.
 |------|---------|
 | `setup.sh` | One-shot root installer. Downloads the latest Linux64 server zip from `necessegame.com/server`, extracts it to `/opt/necesse-server`, writes `cfg/server.cfg`, creates a `necesse` user, registers a systemd service, and sets up the daily backup timer. |
 | `backup.sh` | World backup script: tars `<install>/saves`, keeps the newest `KEEP` (7) archives. Wired into a systemd timer by `setup.sh`, runnable standalone. |
+| `spike_monitor.sh` | Optional CPU spike monitor — snapshots top CPU consumers + game log tail when server CPU jumps above a threshold, to `/root/cpu-spikes.log`. |
 | `config-reference.cfg` | Documented template of every server + world setting (MOTD/name, password, pauseWhenEmpty, death penalty, day/night length, PvP, raids, etc.) with all valid options. |
 | `README.md` | This file. |
 
