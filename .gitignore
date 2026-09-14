@@ -7,3 +7,8 @@ Thumbs.db
 # OS junk
 .vscode/
 .idea/
+
+# Secrets / world save backups - NEVER commit (contain server password + world data)
+*.tar.gz
+*.zip
+*.bak*
