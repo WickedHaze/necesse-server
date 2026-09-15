@@ -30,8 +30,10 @@ log() { echo -e "\033[1;32m[setup]\033[0m $*"; }
 die() { echo -e "\033[1;31m[error]\033[0m $*"; exit 1; }
 
 [[ $EUID -eq 0 ]] || die "Run as root:  sudo bash setup.sh"
-command -v unzip >/dev/null 2>&1 || { apt-get update -y; apt-get install -y unzip curl; }
-command -v wget >/dev/null 2>&1 || apt-get install -y wget curl tar unzip
+command -v unzip >/dev/null 2>&1 || { apt-get update -y; apt-get install -y unzip; }
+command -v file >/dev/null 2>&1 || apt-get install -y file
+command -v python3 >/dev/null 2>&1 || apt-get install -y python3
+command -v wget >/dev/null 2>&1 || apt-get install -y wget tar unzip
 
 # --- dedicated service account -------------------------------------------
 if ! id "$RUN_USER" >/dev/null 2>&1; then
@@ -42,16 +44,33 @@ fi
 
 # --- download + extract the server ---------------------------------------
 log "Fetching latest Linux64 server build from necessegame.com/server ..."
-# Grab the newest (v1.3.x) linux64 signed URL from the page: first href containing
-# "necesse-server-linux64-" and unescape HTML entities.
-URL="$(curl -s -A 'Mozilla/5.0' https://necessegame.com/server \
-  | grep -oE 'href="[^"]*necesse-server-linux64-[0-9][^"]*"' | head -1 \
-  | sed 's/^href="//; s/"$//' | sed 's/&amp;/\&/g')"
-[[ -n "$URL" ]] || die "Could not find Linux64 download URL on necessegame.com/server"
-
-rm -rf /tmp/necesse-dl && mkdir -p /tmp/necesse-dl
-curl -s -A 'Mozilla/5.0' -o /tmp/necesse-dl/server.zip "$URL"
+mkdir -p /tmp/necesse-dl
+# Reuse an existing, already-valid zip to avoid re-downloading (network can be
+# flaky). Otherwise fetch page+URL+download all in Python so the S3 presigned
+# URL is preserved byte-for-byte (shell quoting mangles &, /, + -> 400 errors).
+if [[ ! -s /tmp/necesse-dl/server.zip ]]; then
+    python3 - <<'PYD'
+import re, urllib.request, os
+UA = {"User-Agent": "Mozilla/5.0"}
+req = urllib.request.Request("https://necessegame.com/server", headers=UA)
+page = urllib.request.urlopen(req, timeout=60).read().decode("utf-8", "replace")
+# Pin to the newest version's URL. A bare wildcard can match an OLD version
+# link whose S3 presigned signature has expired -> SignatureDoesNotMatch/400.
+# Find ALL linux64 hrefs and take the first (page lists newest first).
+matches = re.findall(r'href="([^"]*necesse-server-linux64-\d[^"]*)"', page)
+if not matches:
+    raise SystemExit("could not locate linux64 URL")
+url = matches[0].replace("&amp;", "&")
+req2 = urllib.request.Request(url, headers=UA)
+data = urllib.request.urlopen(req2, timeout=180).read()
+os.makedirs("/tmp/necesse-dl", exist_ok=True)
+with open("/tmp/necesse-dl/server.zip", "wb") as f:
+    f.write(data)
+print("downloaded", len(data), "bytes")
+PYD
+fi
 [[ -s /tmp/necesse-dl/server.zip ]] || die "Download produced an empty file"
+[[ "$(file -b /tmp/necesse-dl/server.zip)" == Zip* ]] || die "Download was not a valid zip (got: $(file -b /tmp/necesse-dl/server.zip))"
 
 rm -rf "$INSTALL_DIR"
 mkdir -p "$(dirname "$INSTALL_DIR")"
